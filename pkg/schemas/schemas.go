@@ -9,6 +9,7 @@ import (
 	"github.com/rancher/wrangler/pkg/data/convert"
 	"github.com/rancher/wrangler/pkg/merr"
 	"github.com/rancher/wrangler/pkg/name"
+	"github.com/sirupsen/logrus"
 )
 
 type SchemasInitFunc func(*Schemas) *Schemas
@@ -115,6 +116,7 @@ func (s *Schemas) doAddSchema(schema Schema) error {
 	} else {
 		s.schemasByID[schema.ID] = &schema
 		s.schemas = append(s.schemas, &schema)
+		logrus.Debugf("added schema [%s], now storing [%d] schemas total", schema.ID, len(s.schemas))
 	}
 
 	return nil
