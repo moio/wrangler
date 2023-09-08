@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/generic"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -140,15 +141,24 @@ func (c *eventController) AddGenericHandler(ctx context.Context, name string, ha
 }
 
 func (c *eventController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *eventController) OnChange(ctx context.Context, name string, sync EventHandler) {
-	c.AddGenericHandler(ctx, name, FromEventHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromEventHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *eventController) OnRemove(ctx context.Context, name string, sync EventHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromEventHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromEventHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *eventController) Enqueue(namespace, name string) {

@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *ingressController) AddGenericHandler(ctx context.Context, name string, 
 }
 
 func (c *ingressController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *ingressController) OnChange(ctx context.Context, name string, sync IngressHandler) {
-	c.AddGenericHandler(ctx, name, FromIngressHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromIngressHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *ingressController) OnRemove(ctx context.Context, name string, sync IngressHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromIngressHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromIngressHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *ingressController) Enqueue(namespace, name string) {
@@ -271,7 +281,10 @@ func RegisterIngressStatusHandler(ctx context.Context, controller IngressControl
 	statusHandler := &ingressStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1beta1.Ingress, status v1beta1.IngressStatus) (v1beta1.IngressStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromIngressHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterIngressStatusHandler(ctx context.Context, controller IngressControl
 func RegisterIngressGeneratingHandler(ctx context.Context, controller IngressController, apply apply.Apply,
 	condition condition.Cond, name string, handler IngressGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &ingressGeneratingHandler{
-		IngressGeneratingHandler: handler,
-		apply:                    apply,
-		name:                     name,
-		gvk:                      controller.GroupVersionKind(),
+		IngressGeneratingHandler: func(obj *v1beta1.Ingress, status v1beta1.IngressStatus) ([]runtime.Object, v1beta1.IngressStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

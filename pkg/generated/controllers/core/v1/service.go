@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *serviceController) AddGenericHandler(ctx context.Context, name string, 
 }
 
 func (c *serviceController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *serviceController) OnChange(ctx context.Context, name string, sync ServiceHandler) {
-	c.AddGenericHandler(ctx, name, FromServiceHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromServiceHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *serviceController) OnRemove(ctx context.Context, name string, sync ServiceHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromServiceHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromServiceHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *serviceController) Enqueue(namespace, name string) {
@@ -271,7 +281,10 @@ func RegisterServiceStatusHandler(ctx context.Context, controller ServiceControl
 	statusHandler := &serviceStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.Service, status v1.ServiceStatus) (v1.ServiceStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromServiceHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterServiceStatusHandler(ctx context.Context, controller ServiceControl
 func RegisterServiceGeneratingHandler(ctx context.Context, controller ServiceController, apply apply.Apply,
 	condition condition.Cond, name string, handler ServiceGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &serviceGeneratingHandler{
-		ServiceGeneratingHandler: handler,
-		apply:                    apply,
-		name:                     name,
-		gvk:                      controller.GroupVersionKind(),
+		ServiceGeneratingHandler: func(obj *v1.Service, status v1.ServiceStatus) ([]runtime.Object, v1.ServiceStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

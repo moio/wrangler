@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *statefulSetController) AddGenericHandler(ctx context.Context, name stri
 }
 
 func (c *statefulSetController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *statefulSetController) OnChange(ctx context.Context, name string, sync StatefulSetHandler) {
-	c.AddGenericHandler(ctx, name, FromStatefulSetHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromStatefulSetHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *statefulSetController) OnRemove(ctx context.Context, name string, sync StatefulSetHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromStatefulSetHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromStatefulSetHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *statefulSetController) Enqueue(namespace, name string) {
@@ -271,7 +281,10 @@ func RegisterStatefulSetStatusHandler(ctx context.Context, controller StatefulSe
 	statusHandler := &statefulSetStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.StatefulSet, status v1.StatefulSetStatus) (v1.StatefulSetStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromStatefulSetHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterStatefulSetStatusHandler(ctx context.Context, controller StatefulSe
 func RegisterStatefulSetGeneratingHandler(ctx context.Context, controller StatefulSetController, apply apply.Apply,
 	condition condition.Cond, name string, handler StatefulSetGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &statefulSetGeneratingHandler{
-		StatefulSetGeneratingHandler: handler,
-		apply:                        apply,
-		name:                         name,
-		gvk:                          controller.GroupVersionKind(),
+		StatefulSetGeneratingHandler: func(obj *v1.StatefulSet, status v1.StatefulSetStatus) ([]runtime.Object, v1.StatefulSetStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

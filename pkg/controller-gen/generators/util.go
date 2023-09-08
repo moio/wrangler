@@ -15,6 +15,7 @@ var (
 		"k8s.io/client-go/rest",
 		"github.com/rancher/lasso/pkg/client",
 		"github.com/rancher/lasso/pkg/controller",
+		"github.com/rancher/lasso/pkg/grapher",
 		"github.com/rancher/wrangler/pkg/apply",
 		"github.com/rancher/wrangler/pkg/condition",
 		"github.com/rancher/wrangler/pkg/schemes",

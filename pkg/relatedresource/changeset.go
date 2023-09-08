@@ -2,9 +2,12 @@ package relatedresource
 
 import (
 	"context"
+	"strings"
 	"time"
 
+	"github.com/rancher/lasso/pkg/grapher"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	"github.com/rancher/wrangler/pkg/generic"
 	"github.com/rancher/wrangler/pkg/kv"
@@ -31,14 +34,17 @@ func FromString(key string) Key {
 type ControllerWrapper interface {
 	Informer() cache.SharedIndexInformer
 	AddGenericHandler(ctx context.Context, name string, handler generic.Handler)
+	GroupVersionKind() schema.GroupVersionKind
 }
 
 type ClusterScopedEnqueuer interface {
 	Enqueue(name string)
+	GroupVersionKind() schema.GroupVersionKind
 }
 
 type Enqueuer interface {
 	Enqueue(namespace, name string)
+	GroupVersionKind() schema.GroupVersionKind
 }
 
 type Resolver func(namespace, name string, obj runtime.Object) ([]Key, error)
@@ -53,7 +59,7 @@ func Watch(ctx context.Context, name string, resolve Resolver, enq Enqueuer, wat
 	}
 }
 
-func watch(ctx context.Context, name string, enq Enqueuer, resolve Resolver, controller ControllerWrapper) {
+func watch(ctx context.Context, watchName string, enq Enqueuer, resolve Resolver, controller ControllerWrapper) {
 	runResolve := func(ns, name string, obj runtime.Object) error {
 		keys, err := resolve(ns, name, obj)
 		if err != nil {
@@ -62,6 +68,15 @@ func watch(ctx context.Context, name string, enq Enqueuer, resolve Resolver, con
 
 		for _, key := range keys {
 			if key.Name != "" {
+				grapher.Record(grapher.Event{
+					Kind:       "Related resource Enqueue",
+					WatchedGVK: controller.GroupVersionKind().String(),
+					GVK:        enq.GroupVersionKind().String(),
+					Key:        strings.TrimPrefix(key.Namespace+"/"+key.Name, "/"),
+					Name:       watchName,
+					StackTrace: nil,
+					Function:   "",
+				})
 				enq.Enqueue(key.Namespace, key.Name)
 			}
 		}
@@ -88,7 +103,7 @@ func watch(ctx context.Context, name string, enq Enqueuer, resolve Resolver, con
 		},
 	})
 
-	controller.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+	controller.AddGenericHandler(ctx, watchName, func(key string, obj runtime.Object) (runtime.Object, error) {
 		ns, name := kv.RSplit(key, "/")
 		return obj, runResolve(ns, name, obj)
 	})

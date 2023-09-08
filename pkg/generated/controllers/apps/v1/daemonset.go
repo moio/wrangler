@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *daemonSetController) AddGenericHandler(ctx context.Context, name string
 }
 
 func (c *daemonSetController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *daemonSetController) OnChange(ctx context.Context, name string, sync DaemonSetHandler) {
-	c.AddGenericHandler(ctx, name, FromDaemonSetHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromDaemonSetHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *daemonSetController) OnRemove(ctx context.Context, name string, sync DaemonSetHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromDaemonSetHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromDaemonSetHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *daemonSetController) Enqueue(namespace, name string) {
@@ -271,7 +281,10 @@ func RegisterDaemonSetStatusHandler(ctx context.Context, controller DaemonSetCon
 	statusHandler := &daemonSetStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.DaemonSet, status v1.DaemonSetStatus) (v1.DaemonSetStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromDaemonSetHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterDaemonSetStatusHandler(ctx context.Context, controller DaemonSetCon
 func RegisterDaemonSetGeneratingHandler(ctx context.Context, controller DaemonSetController, apply apply.Apply,
 	condition condition.Cond, name string, handler DaemonSetGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &daemonSetGeneratingHandler{
-		DaemonSetGeneratingHandler: handler,
-		apply:                      apply,
-		name:                       name,
-		gvk:                        controller.GroupVersionKind(),
+		DaemonSetGeneratingHandler: func(obj *v1.DaemonSet, status v1.DaemonSetStatus) ([]runtime.Object, v1.DaemonSetStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

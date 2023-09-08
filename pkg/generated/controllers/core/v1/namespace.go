@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *namespaceController) AddGenericHandler(ctx context.Context, name string
 }
 
 func (c *namespaceController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *namespaceController) OnChange(ctx context.Context, name string, sync NamespaceHandler) {
-	c.AddGenericHandler(ctx, name, FromNamespaceHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromNamespaceHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *namespaceController) OnRemove(ctx context.Context, name string, sync NamespaceHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromNamespaceHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromNamespaceHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *namespaceController) Enqueue(name string) {
@@ -271,7 +281,10 @@ func RegisterNamespaceStatusHandler(ctx context.Context, controller NamespaceCon
 	statusHandler := &namespaceStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.Namespace, status v1.NamespaceStatus) (v1.NamespaceStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromNamespaceHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterNamespaceStatusHandler(ctx context.Context, controller NamespaceCon
 func RegisterNamespaceGeneratingHandler(ctx context.Context, controller NamespaceController, apply apply.Apply,
 	condition condition.Cond, name string, handler NamespaceGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &namespaceGeneratingHandler{
-		NamespaceGeneratingHandler: handler,
-		apply:                      apply,
-		name:                       name,
-		gvk:                        controller.GroupVersionKind(),
+		NamespaceGeneratingHandler: func(obj *v1.Namespace, status v1.NamespaceStatus) ([]runtime.Object, v1.NamespaceStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

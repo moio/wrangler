@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *networkPolicyController) AddGenericHandler(ctx context.Context, name st
 }
 
 func (c *networkPolicyController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *networkPolicyController) OnChange(ctx context.Context, name string, sync NetworkPolicyHandler) {
-	c.AddGenericHandler(ctx, name, FromNetworkPolicyHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromNetworkPolicyHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *networkPolicyController) OnRemove(ctx context.Context, name string, sync NetworkPolicyHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromNetworkPolicyHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromNetworkPolicyHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *networkPolicyController) Enqueue(namespace, name string) {
@@ -271,7 +281,10 @@ func RegisterNetworkPolicyStatusHandler(ctx context.Context, controller NetworkP
 	statusHandler := &networkPolicyStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.NetworkPolicy, status v1.NetworkPolicyStatus) (v1.NetworkPolicyStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromNetworkPolicyHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterNetworkPolicyStatusHandler(ctx context.Context, controller NetworkP
 func RegisterNetworkPolicyGeneratingHandler(ctx context.Context, controller NetworkPolicyController, apply apply.Apply,
 	condition condition.Cond, name string, handler NetworkPolicyGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &networkPolicyGeneratingHandler{
-		NetworkPolicyGeneratingHandler: handler,
-		apply:                          apply,
-		name:                           name,
-		gvk:                            controller.GroupVersionKind(),
+		NetworkPolicyGeneratingHandler: func(obj *v1.NetworkPolicy, status v1.NetworkPolicyStatus) ([]runtime.Object, v1.NetworkPolicyStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

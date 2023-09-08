@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *persistentVolumeController) AddGenericHandler(ctx context.Context, name
 }
 
 func (c *persistentVolumeController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *persistentVolumeController) OnChange(ctx context.Context, name string, sync PersistentVolumeHandler) {
-	c.AddGenericHandler(ctx, name, FromPersistentVolumeHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromPersistentVolumeHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *persistentVolumeController) OnRemove(ctx context.Context, name string, sync PersistentVolumeHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromPersistentVolumeHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromPersistentVolumeHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *persistentVolumeController) Enqueue(name string) {
@@ -271,7 +281,10 @@ func RegisterPersistentVolumeStatusHandler(ctx context.Context, controller Persi
 	statusHandler := &persistentVolumeStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.PersistentVolume, status v1.PersistentVolumeStatus) (v1.PersistentVolumeStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromPersistentVolumeHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterPersistentVolumeStatusHandler(ctx context.Context, controller Persi
 func RegisterPersistentVolumeGeneratingHandler(ctx context.Context, controller PersistentVolumeController, apply apply.Apply,
 	condition condition.Cond, name string, handler PersistentVolumeGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &persistentVolumeGeneratingHandler{
-		PersistentVolumeGeneratingHandler: handler,
-		apply:                             apply,
-		name:                              name,
-		gvk:                               controller.GroupVersionKind(),
+		PersistentVolumeGeneratingHandler: func(obj *v1.PersistentVolume, status v1.PersistentVolumeStatus) ([]runtime.Object, v1.PersistentVolumeStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts

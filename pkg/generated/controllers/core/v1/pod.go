@@ -24,6 +24,7 @@ import (
 
 	"github.com/rancher/lasso/pkg/client"
 	"github.com/rancher/lasso/pkg/controller"
+	"github.com/rancher/lasso/pkg/grapher"
 	"github.com/rancher/wrangler/pkg/apply"
 	"github.com/rancher/wrangler/pkg/condition"
 	"github.com/rancher/wrangler/pkg/generic"
@@ -143,15 +144,24 @@ func (c *podController) AddGenericHandler(ctx context.Context, name string, hand
 }
 
 func (c *podController) AddGenericRemoveHandler(ctx context.Context, name string, handler generic.Handler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), handler))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(handler)})
+		return generic.NewRemoveHandler(name, c.Updater(), handler)(key, obj)
+	})
 }
 
 func (c *podController) OnChange(ctx context.Context, name string, sync PodHandler) {
-	c.AddGenericHandler(ctx, name, FromPodHandlerToHandler(sync))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return FromPodHandlerToHandler(sync)(key, obj)
+	})
 }
 
 func (c *podController) OnRemove(ctx context.Context, name string, sync PodHandler) {
-	c.AddGenericHandler(ctx, name, generic.NewRemoveHandler(name, c.Updater(), FromPodHandlerToHandler(sync)))
+	c.AddGenericHandler(ctx, name, func(key string, obj runtime.Object) (runtime.Object, error) {
+		grapher.Record(grapher.Event{Kind: "Handler called", GVK: c.gvk.String(), Key: key, Name: name, Function: grapher.HandlerFuncName(sync)})
+		return generic.NewRemoveHandler(name, c.Updater(), FromPodHandlerToHandler(sync))(key, obj)
+	})
 }
 
 func (c *podController) Enqueue(namespace, name string) {
@@ -271,7 +281,10 @@ func RegisterPodStatusHandler(ctx context.Context, controller PodController, con
 	statusHandler := &podStatusHandler{
 		client:    controller,
 		condition: condition,
-		handler:   handler,
+		handler: func(obj *v1.Pod, status v1.PodStatus) (v1.PodStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "status", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
 	}
 	controller.AddGenericHandler(ctx, name, FromPodHandlerToHandler(statusHandler.sync))
 }
@@ -279,10 +292,13 @@ func RegisterPodStatusHandler(ctx context.Context, controller PodController, con
 func RegisterPodGeneratingHandler(ctx context.Context, controller PodController, apply apply.Apply,
 	condition condition.Cond, name string, handler PodGeneratingHandler, opts *generic.GeneratingHandlerOptions) {
 	statusHandler := &podGeneratingHandler{
-		PodGeneratingHandler: handler,
-		apply:                apply,
-		name:                 name,
-		gvk:                  controller.GroupVersionKind(),
+		PodGeneratingHandler: func(obj *v1.Pod, status v1.PodStatus) ([]runtime.Object, v1.PodStatus, error) {
+			grapher.Record(grapher.Event{Kind: "Handler called", GVK: controller.GroupVersionKind().String(), Key: "generating", Name: name, Function: grapher.HandlerFuncName(handler)})
+			return handler(obj, status)
+		},
+		apply: apply,
+		name:  name,
+		gvk:   controller.GroupVersionKind(),
 	}
 	if opts != nil {
 		statusHandler.opts = *opts
